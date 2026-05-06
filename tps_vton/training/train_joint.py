@@ -22,7 +22,16 @@ from models.losses import GMMLossComputer, RefinementLossComputer, lsgan_d_loss
 from models.refinement import RefinementUNet, compose_output
 from training.scheduler import RegWeightSchedule, build_lr_scheduler
 from training.validator import ValidationTracker, load_checkpoint
-from utils.helpers import count_parameters, get_device, make_amp_scaler, set_seed
+from utils.helpers import (
+    count_parameters,
+    get_device,
+    load_state_dict_compat,
+    make_amp_scaler,
+    maybe_data_parallel,
+    set_seed,
+    state_dict_for_save,
+    unwrap,
+)
 from utils.logger import Logger
 from utils.visualization import visualize_warp_result
 
@@ -104,7 +113,8 @@ def train_joint(
         coarse_grid=cfg["model"]["coarse_grid"],
         fine_grid=cfg["model"]["fine_grid"],
         regression_dropout=cfg["model"]["regression_dropout"],
-    ).to(device)
+    )
+    gmm = maybe_data_parallel(gmm, device)
     load_checkpoint(gmm_checkpoint, gmm, map_location=device, strict=False)
     gmm.train()
     for p in gmm.parameters():
@@ -114,17 +124,19 @@ def train_joint(
         in_ch=7,
         features=cfg["model"]["encoder_features"],
         gmm_features=cfg["model"]["encoder_features"],
-    ).to(device)
+    )
+    refine = maybe_data_parallel(refine, device)
     load_checkpoint(refine_checkpoint, refine, map_location=device, strict=False)
     refine.train()
 
     # Discriminator: warm-start from refinement checkpoint if available, else fresh.
     disc = PatchDiscriminator(
         in_ch=cfg["discriminator"]["in_channels"], features=cfg["discriminator"]["features"],
-    ).to(device)
+    )
+    disc = maybe_data_parallel(disc, device)
     refine_ckpt = torch.load(refine_checkpoint, map_location="cpu")
     if "discriminator_state_dict" in refine_ckpt:
-        disc.load_state_dict(refine_ckpt["discriminator_state_dict"], strict=False)
+        load_state_dict_compat(disc, refine_ckpt["discriminator_state_dict"], strict=False)
         print("[info] discriminator warm-started from refinement checkpoint")
 
     print(f"[info] GMM params    = {count_parameters(gmm):,}")
@@ -185,11 +197,11 @@ def train_joint(
     if resume_from is not None:
         rk = torch.load(resume_from, map_location="cpu")
         if "gmm_state_dict" in rk:
-            gmm.load_state_dict(rk["gmm_state_dict"], strict=False)
+            load_state_dict_compat(gmm, rk["gmm_state_dict"], strict=False)
         if "refine_state_dict" in rk:
-            refine.load_state_dict(rk["refine_state_dict"], strict=False)
+            load_state_dict_compat(refine, rk["refine_state_dict"], strict=False)
         if "discriminator_state_dict" in rk:
-            disc.load_state_dict(rk["discriminator_state_dict"], strict=False)
+            load_state_dict_compat(disc, rk["discriminator_state_dict"], strict=False)
         if rk.get("optimizer_state_dict") is not None:
             opt_g.load_state_dict(rk["optimizer_state_dict"])
         if rk.get("discriminator_optimizer_state_dict") is not None:
@@ -228,7 +240,7 @@ def train_joint(
                 warped_cloth, warped_mask, coarse_theta, fine_theta, coarse_warped = gmm(
                     batch["cloth"], batch["cloth_mask"], batch["cloth_sem_mask"], batch["person_rep"],
                 )
-                gmm_person_feats = gmm.encode_person(batch["person_rep"])
+                gmm_person_feats = unwrap(gmm).encode_person(batch["person_rep"])
                 refined, comp_mask = refine(
                     warped_cloth, person_image, agnostic_mask, gmm_feats=gmm_person_feats,
                 )
@@ -302,7 +314,7 @@ def train_joint(
             b = _move(b, device)
             with torch.no_grad():
                 wc, _, _, _, _ = gmm(b["cloth"], b["cloth_mask"], b["cloth_sem_mask"], b["person_rep"])
-                gp = gmm.encode_person(b["person_rep"])
+                gp = unwrap(gmm).encode_person(b["person_rep"])
                 r, cm = refine(wc, b["image"], b["agnostic_flow_mask"], gmm_feats=gp)
                 cmp = compose_output(r, b["image"], cm)
             return cmp, b["image"]
@@ -320,9 +332,9 @@ def train_joint(
 
         # Save with all three state dicts so a joint checkpoint is fully restartable.
         joint_extra = {
-            "gmm_state_dict": gmm.state_dict(),
-            "refine_state_dict": refine.state_dict(),
-            "discriminator_state_dict": disc.state_dict(),
+            "gmm_state_dict": state_dict_for_save(gmm),
+            "refine_state_dict": state_dict_for_save(refine),
+            "discriminator_state_dict": state_dict_for_save(disc),
             "discriminator_optimizer_state_dict": opt_d.state_dict(),
             "phase": "joint",
         }

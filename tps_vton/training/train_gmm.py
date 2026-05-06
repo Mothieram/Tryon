@@ -22,7 +22,16 @@ from models.gmm import MultiScaleGMM
 from models.losses import GMMLossComputer
 from training.scheduler import RegWeightSchedule, build_lr_scheduler
 from training.validator import ValidationTracker, load_checkpoint
-from utils.helpers import count_parameters, get_device, make_amp_scaler, set_seed
+from utils.helpers import (
+    count_parameters,
+    get_device,
+    load_state_dict_compat,
+    make_amp_scaler,
+    maybe_data_parallel,
+    set_seed,
+    state_dict_for_save,
+    unwrap,
+)
 from utils.logger import Logger
 from utils.visualization import visualize_tps_grid, visualize_warp_result
 
@@ -115,12 +124,13 @@ def _train_phase(
         coarse_grid=cfg["model"]["coarse_grid"],
         fine_grid=cfg["model"]["fine_grid"],
         regression_dropout=cfg["model"]["regression_dropout"],
-    ).to(device)
+    )
+    model = maybe_data_parallel(model, device)
     if init_state_dict is not None:
         # When switching resolution the TPS buffers re-derive from the new (H, W); load
         # the rest of the parameters (encoder weights, regression head) from the prior
         # phase's best checkpoint.
-        missing, unexpected = model.load_state_dict(init_state_dict, strict=False)
+        missing, unexpected = load_state_dict_compat(model, init_state_dict, strict=False)
         print(f"  loaded checkpoint: missing={len(missing)} unexpected={len(unexpected)}")
 
     print(f"  params = {count_parameters(model):,}")
@@ -356,7 +366,7 @@ def train_gmm(cfg_path: str, resume_from: Optional[str] = None, smoke: bool = Fa
         if best_path.exists():
             best_state = torch.load(best_path, map_location="cpu")["model_state_dict"]
         else:
-            best_state = model.state_dict()
+            best_state = state_dict_for_save(model)
 
         high_res = tuple(cfg["data"]["high_resolution"])
         hr_lr = base_lr * pr["high_res_lr_factor"]

@@ -16,6 +16,8 @@ try:
 except ImportError:
     _lpips_pkg = None
 
+from utils.helpers import load_state_dict_compat, state_dict_for_save
+
 
 class ValidationTracker:
     """Run validation, compute SSIM/LPIPS/L1, and save best checkpoints.
@@ -126,7 +128,7 @@ class ValidationTracker:
     ) -> Dict[str, Any]:
         state = {
             "epoch": epoch,
-            "model_state_dict": model.state_dict(),
+            "model_state_dict": state_dict_for_save(model),
             "optimizer_state_dict": optimizer.state_dict(),
             "scheduler_state_dict": scheduler.state_dict() if scheduler is not None else None,
             "scaler_state_dict": scaler.state_dict() if scaler is not None else None,
@@ -205,7 +207,7 @@ def load_checkpoint(
 ) -> Dict[str, Any]:
     """Restore model + (optionally) optimizer/scheduler/scaler from a checkpoint."""
     ckpt = torch.load(path, map_location=map_location)
-    model.load_state_dict(ckpt["model_state_dict"], strict=strict)
+    load_state_dict_compat(model, ckpt["model_state_dict"], strict=strict)
     if optimizer is not None and ckpt.get("optimizer_state_dict") is not None:
         optimizer.load_state_dict(ckpt["optimizer_state_dict"])
     if scheduler is not None and ckpt.get("scheduler_state_dict") is not None:

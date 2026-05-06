@@ -23,7 +23,16 @@ from models.losses import RefinementLossComputer, lsgan_d_loss
 from models.refinement import RefinementUNet, compose_output
 from training.scheduler import build_lr_scheduler
 from training.validator import ValidationTracker, load_checkpoint
-from utils.helpers import count_parameters, get_device, make_amp_scaler, set_seed
+from utils.helpers import (
+    count_parameters,
+    get_device,
+    load_state_dict_compat,
+    make_amp_scaler,
+    maybe_data_parallel,
+    set_seed,
+    state_dict_for_save,
+    unwrap,
+)
 from utils.logger import Logger
 from utils.visualization import visualize_comp_mask, visualize_warp_result
 
@@ -115,7 +124,8 @@ def train_refinement(
         coarse_grid=cfg["model"]["coarse_grid"],
         fine_grid=cfg["model"]["fine_grid"],
         regression_dropout=cfg["model"]["regression_dropout"],
-    ).to(device)
+    )
+    gmm = maybe_data_parallel(gmm, device)
     load_checkpoint(gmm_checkpoint, gmm, map_location=device, strict=False)
     gmm.eval()
     for p in gmm.parameters():
@@ -127,11 +137,13 @@ def train_refinement(
         in_ch=7,
         features=cfg["model"]["encoder_features"],
         gmm_features=cfg["model"]["encoder_features"],
-    ).to(device)
+    )
+    refine = maybe_data_parallel(refine, device)
     disc = PatchDiscriminator(
         in_ch=cfg["discriminator"]["in_channels"],
         features=cfg["discriminator"]["features"],
-    ).to(device)
+    )
+    disc = maybe_data_parallel(disc, device)
     print(f"[info] refine params = {count_parameters(refine):,}")
     print(f"[info] disc   params = {count_parameters(disc):,}")
 
@@ -171,9 +183,9 @@ def train_refinement(
     start_epoch = 0
     if resume_from is not None:
         ck = torch.load(resume_from, map_location="cpu")
-        refine.load_state_dict(ck["model_state_dict"], strict=False)
+        load_state_dict_compat(refine, ck["model_state_dict"], strict=False)
         if "discriminator_state_dict" in ck:
-            disc.load_state_dict(ck["discriminator_state_dict"], strict=False)
+            load_state_dict_compat(disc, ck["discriminator_state_dict"], strict=False)
         if ck.get("optimizer_state_dict") is not None:
             opt_g.load_state_dict(ck["optimizer_state_dict"])
         if ck.get("discriminator_optimizer_state_dict") is not None:
@@ -219,7 +231,7 @@ def train_refinement(
                 warped_cloth, warped_mask, _, _, _ = gmm(
                     batch["cloth"], batch["cloth_mask"], batch["cloth_sem_mask"], batch["person_rep"],
                 )
-                gmm_person_feats = gmm.encode_person(batch["person_rep"])
+                gmm_person_feats = unwrap(gmm).encode_person(batch["person_rep"])
 
             # ============================================================
             # Generator (refinement) update
@@ -308,7 +320,7 @@ def train_refinement(
                 b = _move(b, device)
                 with torch.no_grad():
                     wc, _, _, _, _ = gmm(b["cloth"], b["cloth_mask"], b["cloth_sem_mask"], b["person_rep"])
-                    gp = gmm.encode_person(b["person_rep"])
+                    gp = unwrap(gmm).encode_person(b["person_rep"])
                     r, cm = _model(wc, b["image"], b["agnostic_flow_mask"], gmm_feats=gp)
                     cmp = compose_output(r, b["image"], cm)
                 return cmp, b["image"]
@@ -321,7 +333,7 @@ def train_refinement(
                 refine, opt_g, sched_g, scaler_g,
                 epoch=epoch, metrics=metrics, config=cfg,
                 extra={
-                    "discriminator_state_dict": disc.state_dict(),
+                    "discriminator_state_dict": state_dict_for_save(disc),
                     "discriminator_optimizer_state_dict": opt_d.state_dict(),
                     "phase": "refinement",
                 },
