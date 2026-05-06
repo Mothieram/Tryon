@@ -1,0 +1,16 @@
+detectron2/
+__pycache__/
+screenshots
+.cupy_cache/
+.tmp/
+cupy_tmp/
+.vscode/
+.claude/
+__pycache__/
+DensePose/
+DM_VTON/
+smplx/
+.qodo/
+third_party/
+dataset/
+checkpoints/

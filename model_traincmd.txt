@@ -1,0 +1,19 @@
+# 0. (one-time) verify dataset and lock the train/val split
+python scripts/prepare_data.py --config configs/config.yaml
+
+# 1. GMM (Stage 1) — 60 epochs at 256x192, then phase-2 high-res automatically
+python train.py --config configs/config.yaml --stage gmm
+
+# 2. Refinement (Stage 2) — 40 epochs, GAN, frozen GMM
+python train.py --config configs/config.yaml --stage refinement \
+    --gmm_checkpoint ../checkpoints/gmm_<run>/best_lpips.pth
+
+# 3. Joint fine-tune (Stage 3) — 15 epochs at lr=1e-5
+python train.py --config configs/config.yaml --stage joint \
+    --gmm_checkpoint ../checkpoints/gmm_<run>/best_lpips.pth \
+    --refine_checkpoint ../checkpoints/refine_<run>/best_lpips.pth
+
+# 4. Final test-set evaluation
+python scripts/evaluate.py --config configs/config.yaml \
+    --gmm_checkpoint ../checkpoints/joint_<run>/best_lpips.pth \
+    --refine_checkpoint ../checkpoints/joint_<run>/best_lpips.pth
