@@ -21,7 +21,7 @@ from data.dataset import VitonHDDataset, deterministic_train_val_split
 from models.gmm import MultiScaleGMM
 from models.losses import GMMLossComputer
 from training.scheduler import RegWeightSchedule, build_lr_scheduler
-from training.validator import ValidationTracker, load_checkpoint
+from training.validator import ValidationTracker, find_resume_checkpoint, load_checkpoint
 from utils.helpers import (
     count_parameters,
     get_device,
@@ -352,12 +352,12 @@ def train_gmm(cfg_path: str, resume_from: Optional[str] = None, smoke: bool = Fa
         device=device,
     )
 
-    # ---- Resume: explicit --resume wins; else auto-pick last.pth if present ----
+    # ---- Resume: explicit --resume wins; else search local dir + /kaggle/input ----
     init_state = None
     resume_ckpt = None
     if resume_from is None:
-        auto = ckpt_dir / "last.pth"
-        if auto.exists():
+        auto = find_resume_checkpoint(ckpt_dir, run_name)
+        if auto is not None:
             resume_from = str(auto)
             print(f"[info] auto-resuming from {auto}")
     if resume_from is not None:

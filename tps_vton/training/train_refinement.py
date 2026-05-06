@@ -22,7 +22,7 @@ from models.gmm import MultiScaleGMM
 from models.losses import RefinementLossComputer, lsgan_d_loss
 from models.refinement import RefinementUNet, compose_output
 from training.scheduler import build_lr_scheduler
-from training.validator import ValidationTracker, load_checkpoint
+from training.validator import ValidationTracker, find_resume_checkpoint, load_checkpoint
 from utils.helpers import (
     count_parameters,
     get_device,
@@ -182,8 +182,8 @@ def train_refinement(
 
     start_epoch = 0
     if resume_from is None:
-        auto = ckpt_dir / "last.pth"
-        if auto.exists():
+        auto = find_resume_checkpoint(ckpt_dir, run_name)
+        if auto is not None:
             resume_from = str(auto)
             print(f"[info] auto-resuming from {auto}")
     if resume_from is not None:

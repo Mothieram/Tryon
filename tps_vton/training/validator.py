@@ -220,3 +220,30 @@ def load_checkpoint(
     if scaler is not None and ckpt.get("scaler_state_dict") is not None:
         scaler.load_state_dict(ckpt["scaler_state_dict"])
     return ckpt
+
+
+def find_resume_checkpoint(local_ckpt_dir: Path, run_name: str) -> Optional[Path]:
+    """Look for a resumable last.pth in this priority order:
+      1) local writable dir   (current/previous run in this session)
+      2) /kaggle/input/**     (a saved-version output or uploaded dataset)
+      3) /content/**          (Colab equivalent)
+    Returns the first match or None if nothing found.
+    """
+    candidates: list[Path] = []
+    local = Path(local_ckpt_dir) / "last.pth"
+    if local.exists():
+        candidates.append(local)
+
+    for root in ("/kaggle/input", "/content"):
+        root_p = Path(root)
+        if not root_p.exists():
+            continue
+        # Prefer matches inside a subdir named after the run (e.g. "gmm/last.pth")
+        for hit in sorted(root_p.rglob(f"{run_name}/last.pth")):
+            candidates.append(hit)
+        # Fallback: any last.pth anywhere under the inputs.
+        for hit in sorted(root_p.rglob("last.pth")):
+            if hit not in candidates:
+                candidates.append(hit)
+
+    return candidates[0] if candidates else None
