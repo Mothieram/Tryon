@@ -265,7 +265,21 @@ def _train_phase(
                 print(f"    [best] checkpoint updated at epoch {epoch}")
             if tracker.should_stop():
                 print(f"  Early stopping at epoch {epoch}")
+                # Save last.pth on early-stop too so resume picks up cleanly.
+                tracker.save_last(
+                    model, optimizer, scheduler, scaler,
+                    epoch=epoch, metrics=metrics, config=cfg,
+                    extra={"resolution": list(resolution), "phase": phase_name},
+                )
                 break
+
+        # Always save last.pth at end of every epoch — regardless of validation —
+        # so a Kaggle timeout never loses more than the current epoch's work.
+        tracker.save_last(
+            model, optimizer, scheduler, scaler,
+            epoch=epoch, metrics=None, config=cfg,
+            extra={"resolution": list(resolution), "phase": phase_name},
+        )
 
         torch.cuda.empty_cache()
 
@@ -317,7 +331,9 @@ def train_gmm(cfg_path: str, resume_from: Optional[str] = None, smoke: bool = Fa
     print(f"[info] train pairs = {len(train_pairs)}, val pairs = {len(val_pairs)}")
 
     # ---- Logger + tracker ----
-    run_name = f"gmm_{int(time.time())}"
+    # Stable run name (no timestamp) so resumes write to the same directory and
+    # the resume path stays predictable across sessions.
+    run_name = "gmm"
     log_dir = Path(cfg["logging"]["log_dir"]) / run_name
     ckpt_dir = Path(cfg["logging"]["ckpt_dir"]) / run_name
     if not log_dir.is_absolute():
@@ -336,9 +352,14 @@ def train_gmm(cfg_path: str, resume_from: Optional[str] = None, smoke: bool = Fa
         device=device,
     )
 
-    # ---- Optional resume from a best checkpoint (full state) ----
+    # ---- Resume: explicit --resume wins; else auto-pick last.pth if present ----
     init_state = None
     resume_ckpt = None
+    if resume_from is None:
+        auto = ckpt_dir / "last.pth"
+        if auto.exists():
+            resume_from = str(auto)
+            print(f"[info] auto-resuming from {auto}")
     if resume_from is not None:
         resume_ckpt = torch.load(resume_from, map_location="cpu")
         init_state = resume_ckpt["model_state_dict"]
@@ -361,8 +382,8 @@ def train_gmm(cfg_path: str, resume_from: Optional[str] = None, smoke: bool = Fa
     # ---- Phase 2: high-res (optional, skipped in smoke mode) ----
     pr = cfg["training"]["progressive_resolution"]
     if pr.get("switch_after_plateau", False) and not smoke:
-        # Reload best-LPIPS weights from phase 1 (encoder + regression heads).
-        best_path = ckpt_dir / "best_lpips.pth"
+        # Reload best weights from phase 1 (encoder + regression heads).
+        best_path = ckpt_dir / "best.pth"
         if best_path.exists():
             best_state = torch.load(best_path, map_location="cpu")["model_state_dict"]
         else:

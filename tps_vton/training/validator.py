@@ -151,34 +151,39 @@ class ValidationTracker:
         config: Dict[str, Any],
         extra: Optional[Dict[str, Any]] = None,
     ) -> bool:
-        improved = False
-
-        # Update self.best FIRST so the saved checkpoint records the new bests
-        # (otherwise resume sees the previous bests).
+        # Track best LPIPS / SSIM internally for early-stopping memory, but write
+        # only one file: best.pth (the checkpoint at the best primary-metric epoch).
         lp = metrics.get("lpips", float("nan"))
         ss = metrics.get("ssim", 0.0)
-        save_lpips = not np.isnan(lp) and lp < self.best["lpips"]
-        save_ssim = ss > self.best["ssim"]
-        if save_lpips:
+        if not np.isnan(lp) and lp < self.best["lpips"]:
             self.best["lpips"] = lp
-        if save_ssim:
+        if ss > self.best["ssim"]:
             self.best["ssim"] = ss
 
-        if save_lpips or save_ssim:
+        improved = self._primary_improved(metrics)
+        if improved:
             ckpt_state = self._build_state(model, optimizer, scheduler, scaler, epoch, metrics, config, extra)
-            if save_lpips:
-                torch.save(ckpt_state, self.save_dir / "best_lpips.pth")
-                improved = True
-            if save_ssim:
-                torch.save(ckpt_state, self.save_dir / "best_ssim.pth")
-                improved = True
-
-        # Early-stopping wait counter — based on the configured primary metric
-        if self._primary_improved(metrics):
+            torch.save(ckpt_state, self.save_dir / "best.pth")
             self.wait = 0
         else:
             self.wait += 1
         return improved
+
+    def save_last(
+        self,
+        model: torch.nn.Module,
+        optimizer: torch.optim.Optimizer,
+        scheduler: Optional[torch.optim.lr_scheduler._LRScheduler],
+        scaler: Optional[torch.cuda.amp.GradScaler],
+        epoch: int,
+        metrics: Optional[Dict[str, float]],
+        config: Dict[str, Any],
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Write last.pth at the end of every epoch so timeouts never lose more
+        than one epoch of work."""
+        ckpt_state = self._build_state(model, optimizer, scheduler, scaler, epoch, metrics, config, extra)
+        torch.save(ckpt_state, self.save_dir / "last.pth")
 
     def _primary_improved(self, metrics: Dict[str, float]) -> bool:
         v = metrics.get(self.primary_metric, float("nan"))

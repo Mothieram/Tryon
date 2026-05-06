@@ -172,7 +172,7 @@ def train_joint(
     reg_schedule = RegWeightSchedule(cfg["training"]["reg_warmup"])
 
     # ---- logger + tracker (aggressive: every epoch) ----
-    run_name = f"joint_{int(time.time())}"
+    run_name = "joint"
     log_dir = (repo_root / cfg["logging"]["log_dir"] / run_name).resolve()
     ckpt_dir = (repo_root / cfg["logging"]["ckpt_dir"] / run_name).resolve()
     print(f"[info] log_dir  = {log_dir}")
@@ -193,7 +193,12 @@ def train_joint(
     global_step = 0
     start_epoch = 0
 
-    # ---- Full resume from a previous joint best checkpoint ----
+    # ---- Full resume: explicit --resume wins; else auto-pick last.pth ----
+    if resume_from is None:
+        auto = ckpt_dir / "last.pth"
+        if auto.exists():
+            resume_from = str(auto)
+            print(f"[info] auto-resuming from {auto}")
     if resume_from is not None:
         rk = torch.load(resume_from, map_location="cpu")
         if "gmm_state_dict" in rk:
@@ -344,6 +349,12 @@ def train_joint(
         )
         if improved:
             print(f"    [best] checkpoint updated at epoch {epoch}")
+
+        # last.pth every epoch — survives Kaggle session timeouts.
+        tracker.save_last(
+            gmm, opt_g, sched_g, scaler_g,
+            epoch=epoch, metrics=metrics, config=cfg, extra=joint_extra,
+        )
 
         torch.cuda.empty_cache()
 

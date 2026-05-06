@@ -166,7 +166,7 @@ def train_refinement(
     refine_loss = RefinementLossComputer(cfg).to(device)
 
     # ---- logger + tracker ----
-    run_name = f"refine_{int(time.time())}"
+    run_name = "refine"
     log_dir = (repo_root / cfg["logging"]["log_dir"] / run_name).resolve()
     ckpt_dir = (repo_root / cfg["logging"]["ckpt_dir"] / run_name).resolve()
     print(f"[info] log_dir  = {log_dir}")
@@ -181,6 +181,11 @@ def train_refinement(
     )
 
     start_epoch = 0
+    if resume_from is None:
+        auto = ckpt_dir / "last.pth"
+        if auto.exists():
+            resume_from = str(auto)
+            print(f"[info] auto-resuming from {auto}")
     if resume_from is not None:
         ck = torch.load(resume_from, map_location="cpu")
         load_state_dict_compat(refine, ck["model_state_dict"], strict=False)
@@ -329,20 +334,35 @@ def train_refinement(
             tracker.log_metrics(epoch, metrics)
             for k, v in metrics.items():
                 logger.scalar(f"refine/val/{k}", v, epoch)
+            extra = {
+                "discriminator_state_dict": state_dict_for_save(disc),
+                "discriminator_optimizer_state_dict": opt_d.state_dict(),
+                "phase": "refinement",
+            }
             improved = tracker.save_if_best(
                 refine, opt_g, sched_g, scaler_g,
-                epoch=epoch, metrics=metrics, config=cfg,
-                extra={
-                    "discriminator_state_dict": state_dict_for_save(disc),
-                    "discriminator_optimizer_state_dict": opt_d.state_dict(),
-                    "phase": "refinement",
-                },
+                epoch=epoch, metrics=metrics, config=cfg, extra=extra,
             )
             if improved:
                 print(f"    [best] checkpoint updated at epoch {epoch}")
             if tracker.should_stop():
                 print(f"  Early stopping at epoch {epoch}")
+                tracker.save_last(
+                    refine, opt_g, sched_g, scaler_g,
+                    epoch=epoch, metrics=metrics, config=cfg, extra=extra,
+                )
                 break
+
+        # last.pth every epoch — survives Kaggle session timeouts.
+        tracker.save_last(
+            refine, opt_g, sched_g, scaler_g,
+            epoch=epoch, metrics=None, config=cfg,
+            extra={
+                "discriminator_state_dict": state_dict_for_save(disc),
+                "discriminator_optimizer_state_dict": opt_d.state_dict(),
+                "phase": "refinement",
+            },
+        )
 
         torch.cuda.empty_cache()
 
