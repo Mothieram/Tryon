@@ -51,7 +51,9 @@ def deterministic_train_val_split(
     seed: int = 42,
 ) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]:
     """Split train_pairs.txt into train + val. Result is cached at val_pairs_file
-    so subsequent runs are deterministic.
+    so subsequent runs are deterministic. The split itself is fully determined by
+    `seed`, so the cache is a convenience; if the target dir is read-only (e.g.
+    /kaggle/input on Kaggle) we silently skip caching.
     """
     train_pairs_file = Path(train_pairs_file)
     val_pairs_file = Path(val_pairs_file)
@@ -66,8 +68,14 @@ def deterministic_train_val_split(
     n_val = max(1, int(len(all_pairs) * val_split))
     val_pairs = all_pairs[:n_val]
     train_pairs = all_pairs[n_val:]
-    _write_pairs(train_only_file, train_pairs)
-    _write_pairs(val_pairs_file, val_pairs)
+    try:
+        _write_pairs(train_only_file, train_pairs)
+        _write_pairs(val_pairs_file, val_pairs)
+    except OSError as e:
+        print(
+            f"[warn] could not cache split files under {val_pairs_file.parent} "
+            f"({e.strerror or e}); proceeding with in-memory split (deterministic by seed={seed})."
+        )
     return train_pairs, val_pairs
 
 

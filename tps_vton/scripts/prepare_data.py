@@ -133,8 +133,15 @@ def main() -> None:
         "test_subdir_counts": test_counts,
     }
     summary_path = data_root / "dataset_summary.json"
-    with open(summary_path, "w") as f:
-        json.dump(summary, f, indent=2)
+    try:
+        with open(summary_path, "w") as f:
+            json.dump(summary, f, indent=2)
+    except OSError as e:
+        fallback = Path.cwd() / "dataset_summary.json"
+        print(f"[warn] could not write summary to {summary_path} ({e.strerror or e}); falling back to {fallback}")
+        summary_path = fallback
+        with open(summary_path, "w") as f:
+            json.dump(summary, f, indent=2)
     print(f"\n[info] summary written to {summary_path}")
 
 
