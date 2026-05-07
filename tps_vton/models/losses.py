@@ -198,16 +198,23 @@ class GMMLossComputer(nn.Module):
         target_mask: torch.Tensor,
         reg_weight: float,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        # target_cloth is already (image * cloth_region_mask). Apply the same mask
+        # to predictions so we score only the cloth region — the input cloth's
+        # white background must not get scored against the target's zero background.
+        m = target_mask
+        coarse_pred = coarse_warped * m
+        fine_pred = warped_cloth * m
+
         # Coarse stage
-        coarse_l1 = F.l1_loss(coarse_warped, target_cloth)
-        coarse_perc = self.perceptual(coarse_warped.clamp(0, 1), target_cloth.clamp(0, 1))
+        coarse_l1 = F.l1_loss(coarse_pred, target_cloth)
+        coarse_perc = self.perceptual(coarse_pred.clamp(0, 1), target_cloth.clamp(0, 1))
 
         # Fine stage (primary)
-        fine_l1 = F.l1_loss(warped_cloth, target_cloth)
-        fine_perc = self.perceptual(warped_cloth.clamp(0, 1), target_cloth.clamp(0, 1))
+        fine_l1 = F.l1_loss(fine_pred, target_cloth)
+        fine_perc = self.perceptual(fine_pred.clamp(0, 1), target_cloth.clamp(0, 1))
 
         mask_loss = F.mse_loss(warped_mask, target_mask)
-        edge_loss = self.edge(warped_cloth, target_cloth)
+        edge_loss = self.edge(fine_pred, target_cloth)
 
         # TPS regularization (warmup-controlled)
         coarse_reg = tps_regularization(coarse_theta)

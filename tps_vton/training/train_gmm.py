@@ -55,12 +55,19 @@ def _gmm_forward(model: MultiScaleGMM, batch: Dict[str, torch.Tensor]):
 
 
 def _val_forward(model: MultiScaleGMM, batch: Dict[str, torch.Tensor]):
-    """Adapter for ValidationTracker: returns (pred, target) in [0, 1]."""
+    """Adapter for ValidationTracker: returns (pred, target) in [0, 1].
+
+    target_cloth is image*cloth_region_mask (zero outside cloth region). The model's
+    raw warped output retains the input cloth's white background outside that region,
+    which would dominate every metric. Mask the prediction so SSIM/LPIPS/L1 only score
+    the cloth region — same pattern the refinement loss uses.
+    """
     device = next(model.parameters()).device
     batch = _move_batch(batch, device)
     warped, _, _, _, _ = _gmm_forward(model, batch)
     target = batch["target_cloth"]
-    return warped, target
+    pred = warped * batch["target_mask"]
+    return pred, target
 
 
 # ------------------------------------------------------------------ training phase

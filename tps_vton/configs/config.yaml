@@ -20,13 +20,19 @@ data:
 
 augmentation:
   horizontal_flip: true
+  # Color jitter is cloth-only and adds noise to the white background of the cloth
+  # photo without paired noise on the target — disabled until the baseline is
+  # stable. Re-enable (e.g. brightness/contrast/saturation 0.1) once GMM converges.
   color_jitter:
-    brightness: 0.15
-    contrast: 0.15
-    saturation: 0.15
-    hue: 0.05
+    brightness: 0.0
+    contrast: 0.0
+    saturation: 0.0
+    hue: 0.0
+  # random_affine is applied only to the cloth (not the person), forcing the warp
+  # to undo the affine PLUS find the body shape. Disabled for the initial
+  # baseline; re-enable once GMM is converging cleanly.
   random_affine:
-    enabled: true
+    enabled: false
     angle: 10
     translate: [0.05, 0.05]
     scale: [0.9, 1.1]
@@ -76,8 +82,8 @@ training:
 
   reg_warmup:
     start_weight: 0.1
-    final_weight: 0.01
-    warmup_epochs: 10
+    final_weight: 0.03           # was 0.01 — keep mild TPS smoothness throughout to prevent grid folding
+    warmup_epochs: 20            # was 10 — slower decay so the warp doesn't go wild before learning structure
 
   progressive_resolution:
     switch_after_plateau: true
@@ -87,10 +93,10 @@ training:
 losses:
   gmm:
     coarse_l1: 0.5
-    coarse_perceptual: 0.05
+    coarse_perceptual: 0.5       # was 0.05 — push perceptual signal so LPIPS metric tracks
     fine_l1: 1.0
-    fine_perceptual: 0.1
-    mask: 0.1
+    fine_perceptual: 1.0         # was 0.1 — primary perceptual term, now matches L1 weight
+    mask: 0.3                    # was 0.1 — encourage warped_mask to fit target_mask
     edge: 0.1
     grid_smoothness: 0.05
 
