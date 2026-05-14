@@ -236,7 +236,11 @@ def train_joint(
         )
         for batch in pbar:
             batch = _move(batch, device)
-            person_image = batch["image"]
+            # agnostic_person = the body without cloth (model input + compose-base).
+            # target_image = ground truth (loss target + discriminator real). Mixing them
+            # leaks the answer into the model's input → trivial pass-through.
+            agnostic_person = batch["agnostic"]
+            target_image = batch["image"]
             agnostic_mask = batch["agnostic_flow_mask"]
 
             # ===== Generator path (GMM + Refine, both trained) =====
@@ -247,11 +251,11 @@ def train_joint(
                 )
                 gmm_person_feats = unwrap(gmm).encode_person(batch["person_rep"])
                 refined, comp_mask = refine(
-                    warped_cloth, person_image, agnostic_mask, gmm_feats=gmm_person_feats,
+                    warped_cloth, agnostic_person, agnostic_mask, gmm_feats=gmm_person_feats,
                 )
-                composed = compose_output(refined, person_image, comp_mask)
+                composed = compose_output(refined, agnostic_person, comp_mask)
 
-                pred_fake_for_g = disc(composed, person_image)
+                pred_fake_for_g = disc(composed, agnostic_person)
 
                 gmm_total, gmm_parts = gmm_loss(
                     warped_cloth, warped_mask, coarse_theta, fine_theta, coarse_warped,
@@ -259,7 +263,7 @@ def train_joint(
                     reg_weight=reg_weight,
                 )
                 refine_total, refine_parts = refine_loss(
-                    composed, comp_mask, person_image, agnostic_mask, pred_fake=pred_fake_for_g,
+                    composed, comp_mask, target_image, agnostic_mask, pred_fake=pred_fake_for_g,
                 )
                 loss_g = gmm_total + refine_total
 
@@ -274,8 +278,10 @@ def train_joint(
             # ===== Discriminator =====
             opt_d.zero_grad(set_to_none=True)
             with torch.cuda.amp.autocast(enabled=cfg["training"]["amp"]["enabled"]):
-                pred_real = disc(person_image, person_image)
-                pred_fake_for_d = disc(composed.detach(), person_image)
+                # Real and fake share the same agnostic conditioning so the discriminator
+                # judges cloth realism on a fixed body — not "are these two inputs equal?".
+                pred_real = disc(target_image, agnostic_person)
+                pred_fake_for_d = disc(composed.detach(), agnostic_person)
                 loss_d = lsgan_d_loss(pred_real, pred_fake_for_d)
             scaler_d.scale(loss_d).backward()
             scaler_d.step(opt_d)
@@ -305,7 +311,7 @@ def train_joint(
             if global_step % image_log_interval == 0:
                 with torch.no_grad():
                     viz = visualize_warp_result(
-                        batch["cloth"], warped_cloth, composed, person_image, n_samples=2,
+                        batch["cloth"], warped_cloth, composed, target_image, n_samples=2,
                     )
                 logger.image("joint/viz/cloth_warped_composed_person", viz, global_step)
 
@@ -316,12 +322,13 @@ def train_joint(
 
         # ---- Validation (every epoch) ----
         def _val_forward(_unused, b):
+            # Use agnostic as input/compose-base; target stays b["image"] (ground truth).
             b = _move(b, device)
             with torch.no_grad():
                 wc, _, _, _, _ = gmm(b["cloth"], b["cloth_mask"], b["cloth_sem_mask"], b["person_rep"])
                 gp = unwrap(gmm).encode_person(b["person_rep"])
-                r, cm = refine(wc, b["image"], b["agnostic_flow_mask"], gmm_feats=gp)
-                cmp = compose_output(r, b["image"], cm)
+                r, cm = refine(wc, b["agnostic"], b["agnostic_flow_mask"], gmm_feats=gp)
+                cmp = compose_output(r, b["agnostic"], cm)
             return cmp, b["image"]
 
         # ValidationTracker uses model.eval()/train(), so wrap a holder module

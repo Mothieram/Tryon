@@ -228,7 +228,12 @@ def train_refinement(
         )
         for batch in pbar:
             batch = _move(batch, device)
-            person_image = batch["image"]
+            # agnostic_person: cloth-less body, what the model is conditioned on / composed onto.
+            # target_image: ground-truth person with cloth on — used ONLY as the loss target
+            # and the discriminator's "real" sample. Mixing these (i.e. passing target_image as
+            # input) leaks the answer and the model collapses to a trivial pass-through.
+            agnostic_person = batch["agnostic"]
+            target_image = batch["image"]
             agnostic_mask = batch["agnostic_flow_mask"]
 
             # ---- frozen GMM warp + person features (for skip injection) ----
@@ -244,12 +249,12 @@ def train_refinement(
             opt_g.zero_grad(set_to_none=True)
             with torch.cuda.amp.autocast(enabled=cfg["training"]["amp"]["enabled"]):
                 refined, comp_mask = refine(
-                    warped_cloth, person_image, agnostic_mask, gmm_feats=gmm_person_feats,
+                    warped_cloth, agnostic_person, agnostic_mask, gmm_feats=gmm_person_feats,
                 )
-                composed = compose_output(refined, person_image, comp_mask)
-                pred_fake_for_g = disc(composed, person_image)
+                composed = compose_output(refined, agnostic_person, comp_mask)
+                pred_fake_for_g = disc(composed, agnostic_person)
                 loss_g, parts_g = refine_loss(
-                    composed, comp_mask, person_image, agnostic_mask, pred_fake=pred_fake_for_g,
+                    composed, comp_mask, target_image, agnostic_mask, pred_fake=pred_fake_for_g,
                 )
 
             scaler_g.scale(loss_g).backward()
@@ -263,8 +268,11 @@ def train_refinement(
             # ============================================================
             opt_d.zero_grad(set_to_none=True)
             with torch.cuda.amp.autocast(enabled=cfg["training"]["amp"]["enabled"]):
-                pred_real = disc(person_image, person_image)
-                pred_fake_for_d = disc(composed.detach(), person_image)
+                # Both real and fake pairs use the same agnostic conditioning, so the
+                # discriminator must judge "is the cloth realistically painted onto this
+                # agnostic body?", not "are these two inputs identical?".
+                pred_real = disc(target_image, agnostic_person)
+                pred_fake_for_d = disc(composed.detach(), agnostic_person)
                 loss_d = lsgan_d_loss(pred_real, pred_fake_for_d)
 
             scaler_d.scale(loss_d).backward()
@@ -297,7 +305,7 @@ def train_refinement(
             if global_step % image_log_interval == 0:
                 with torch.no_grad():
                     viz = visualize_warp_result(
-                        warped_cloth, refined, composed, person_image, n_samples=2,
+                        warped_cloth, refined, composed, target_image, n_samples=2,
                     )
                     cm_viz = visualize_comp_mask(comp_mask)
                 logger.image("refine/viz/warped_refined_composed_person", viz, global_step)
@@ -322,12 +330,15 @@ def train_refinement(
         # ---- Validation + best-only checkpoint ----
         if (epoch + 1) % val_interval == 0 or epoch == epochs - 1:
             def _val_forward(_model, b):
+                # Conditioning / compose-base is the agnostic person (cloth removed).
+                # Target stays b["image"] (the ground truth). Passing b["image"] as input
+                # would let the model trivially echo the answer.
                 b = _move(b, device)
                 with torch.no_grad():
                     wc, _, _, _, _ = gmm(b["cloth"], b["cloth_mask"], b["cloth_sem_mask"], b["person_rep"])
                     gp = unwrap(gmm).encode_person(b["person_rep"])
-                    r, cm = _model(wc, b["image"], b["agnostic_flow_mask"], gmm_feats=gp)
-                    cmp = compose_output(r, b["image"], cm)
+                    r, cm = _model(wc, b["agnostic"], b["agnostic_flow_mask"], gmm_feats=gp)
+                    cmp = compose_output(r, b["agnostic"], cm)
                 return cmp, b["image"]
 
             metrics = tracker.validate(refine, val_loader, _val_forward)
