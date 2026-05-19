@@ -116,7 +116,7 @@ validation:
   save_top_k: 3
   early_stopping_patience: 10
   metrics: ["lpips", "ssim", "l1"]
-  primary_metric: "lpips"
+  primary_metric: "ssim"
   primary_metric_mode: "max"
 
 logging:
